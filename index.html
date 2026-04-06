@@ -1,0 +1,254 @@
+<!DOCTYPE html>
+<html lang="pt-PT">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Koenigsegg Agera 3D - Interativo</title>
+    <style>
+        body {
+            margin: 0;
+            overflow: hidden;
+            font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif;
+            background-color: #1a1a1a;
+        }
+        #canvas-container {
+            width: 100vw;
+            height: 100vh;
+        }
+        #ui-panel {
+            position: absolute;
+            bottom: 30px;
+            left: 50%;
+            transform: translateX(-50%);
+            background: rgba(0, 0, 0, 0.7);
+            padding: 15px 25px;
+            border-radius: 10px;
+            display: flex;
+            gap: 15px;
+            box-shadow: 0 4px 6px rgba(0,0,0,0.3);
+        }
+        button {
+            background: #e63946;
+            color: white;
+            border: none;
+            padding: 10px 15px;
+            border-radius: 5px;
+            cursor: pointer;
+            font-weight: bold;
+            transition: 0.3s;
+        }
+        button:hover {
+            background: #f1faee;
+            color: #e63946;
+        }
+        #loading {
+            position: absolute;
+            top: 50%;
+            left: 50%;
+            transform: translate(-50%, -50%);
+            color: white;
+            font-size: 24px;
+            font-weight: bold;
+        }
+    </style>
+</head>
+<body>
+
+    <div id="loading">A carregar modelo 3D (pode demorar um pouco)...</div>
+    <div id="canvas-container"></div>
+    
+    <div id="ui-panel" style="display: none;">
+        <button id="btn-engine">Ligar Carro (Luzes)</button>
+        <button id="btn-doors">Abrir/Fechar Portas</button>
+        <button id="btn-trunk">Abrir Porta-Bagagens</button>
+        <button id="btn-steer">Virar Volante</button>
+    </div>
+
+    <script type="importmap">
+        {
+            "imports": {
+                "three": "https://unpkg.com/three@0.150.1/build/three.module.js",
+                "three/addons/": "https://unpkg.com/three@0.150.1/examples/jsm/"
+            }
+        }
+    </script>
+
+    <script type="module">
+        import * as THREE from 'three';
+        import { OrbitControls } from 'three/addons/controls/OrbitControls.js';
+        import { FBXLoader } from 'three/addons/loaders/FBXLoader.js';
+
+        // 1. Configuração Básica da Cena
+        const scene = new THREE.Scene();
+        scene.background = new THREE.Color(0x222222);
+        // Nevoeiro subtil para dar profundidade
+        scene.fog = new THREE.Fog(0x222222, 10, 50);
+
+        const camera = new THREE.PerspectiveCamera(45, window.innerWidth / window.innerHeight, 0.1, 100);
+        camera.position.set(5, 2, 5);
+
+        const renderer = new THREE.WebGLRenderer({ antialias: true });
+        renderer.setSize(window.innerWidth, window.innerHeight);
+        renderer.shadowMap.enabled = true;
+        renderer.shadowMap.type = THREE.PCFSoftShadowMap;
+        document.getElementById('canvas-container').appendChild(renderer.domElement);
+
+        const controls = new OrbitControls(camera, renderer.domElement);
+        controls.enableDamping = true;
+        controls.maxPolarAngle = Math.PI / 2 - 0.05; // Não deixar ir debaixo do chão
+
+        // 2. Iluminação
+        const ambientLight = new THREE.AmbientLight(0xffffff, 0.6);
+        scene.add(ambientLight);
+
+        const dirLight = new THREE.DirectionalLight(0xffffff, 1);
+        dirLight.position.set(5, 10, 5);
+        dirLight.castShadow = true;
+        scene.add(dirLight);
+
+        // Chão/Estúdio
+        const planeGeo = new THREE.PlaneGeometry(100, 100);
+        const planeMat = new THREE.MeshStandardMaterial({ color: 0x111111, roughness: 0.8 });
+        const plane = new THREE.Mesh(planeGeo, planeMat);
+        plane.rotation.x = -Math.PI / 2;
+        plane.receiveShadow = true;
+        scene.add(plane);
+
+        // 3. Variáveis de Controlo do Carro
+        let carModel;
+        let mixer; // Para animações embutidas no rig
+        let leftDoor, rightDoor, trunk, steeringWheel;
+        let doorsOpen = false;
+        let trunkOpen = false;
+        let steerAngle = 0;
+        let engineOn = false;
+        
+        // Faróis (Luzes do Carro)
+        const leftHeadlight = new THREE.SpotLight(0xffffee, 0);
+        const rightHeadlight = new THREE.SpotLight(0xffffee, 0);
+
+        // 4. Carregar o Ficheiro FBX
+        const loader = new FBXLoader();
+        loader.load(
+            'Koenigsegg.fbx', // O nome do seu ficheiro deve estar aqui
+            (fbx) => {
+                carModel = ffbx;
+                carModel.scale.set(0.01, 0.01, 0.01); // Ajuste a escala conforme necessário
+                
+                carModel.traverse((child) => {
+                    if (child.isMesh) {
+                        child.castShadow = true;
+                        child.receiveShadow = true;
+                        
+                        // NOTA: É aqui que mapeamos os nomes dos objetos.
+                        // Terá de substituir estes nomes pelos nomes exatos que estão no seu ficheiro Blender/FBX.
+                        // Exemplo: console.log(child.name); // Descomente isto para ver os nomes no console do browser
+                        const name = child.name.toLowerCase();
+                        if (name.includes('door_l') || name.includes('porta_esq')) leftDoor = child;
+                        if (name.includes('door_r') || name.includes('porta_dir')) rightDoor = child;
+                        if (name.includes('trunk') || name.includes('hood') || name.includes('capo')) trunk = child;
+                        if (name.includes('steer') || name.includes('volante')) steeringWheel = child;
+                    }
+                });
+
+                // Se o FBX tiver animações de rig embutidas:
+                if (fbx.animations.length > 0) {
+                    mixer = new THREE.AnimationMixer(fbx);
+                    // Opcionalmente, pode tocar a primeira animação: mixer.clipAction(fbx.animations[0]).play();
+                }
+
+                scene.add(carModel);
+
+                // Configurar faróis
+                leftHeadlight.position.set(-0.8, 0.7, 2); // Ajuste coordenadas para o farol esquerdo
+                leftHeadlight.target.position.set(-0.8, 0.5, 10);
+                scene.add(leftHeadlight);
+                scene.add(leftHeadlight.target);
+
+                rightHeadlight.position.set(0.8, 0.7, 2); // Ajuste coordenadas para o farol direito
+                rightHeadlight.target.position.set(0.8, 0.5, 10);
+                scene.add(rightHeadlight);
+                scene.add(rightHeadlight.target);
+
+                document.getElementById('loading').style.display = 'none';
+                document.getElementById('ui-panel').style.display = 'flex';
+            },
+            (xhr) => {
+                const percent = Math.round((xhr.loaded / xhr.total) * 100);
+                document.getElementById('loading').innerText = `A carregar modelo... ${percent}%`;
+            },
+            (error) => {
+                console.error('Erro ao carregar o modelo:', error);
+                document.getElementById('loading').innerText = 'Erro ao carregar. Verifique a consola.';
+            }
+        );
+
+        // 5. Lógica dos Botões (Interatividade)
+        document.getElementById('btn-doors').addEventListener('click', () => {
+            doorsOpen = !doorsOpen;
+            const targetRotation = doorsOpen ? Math.PI / 3 : 0; // 60 graus
+            
+            // As portas Koenigsegg (Dihedral synchro-helix) abrem para fora e para a frente.
+            // Para efeitos de código genérico, rodam no eixo Y ou Z.
+            if (leftDoor) leftDoor.rotation.y = targetRotation;
+            if (rightDoor) rightDoor.rotation.y = -targetRotation;
+            
+            if(!leftDoor && !rightDoor) alert("Não foi possível encontrar a malha das portas com os nomes padrão. Terá de ajustar os nomes no código.");
+        });
+
+        document.getElementById('btn-trunk').addEventListener('click', () => {
+            trunkOpen = !trunkOpen;
+            if (trunk) {
+                trunk.rotation.x = trunkOpen ? -Math.PI / 4 : 0; // Levanta o porta-bagagens/capô
+            } else {
+                alert("Peça do porta-bagagens não encontrada no modelo.");
+            }
+        });
+
+        document.getElementById('btn-steer').addEventListener('click', () => {
+            steerAngle = (steerAngle === 0) ? Math.PI / 2 : 0; // Roda 90 graus
+            if (steeringWheel) {
+                steeringWheel.rotation.z = steerAngle;
+            } else {
+                alert("Peça do volante não encontrada no modelo.");
+            }
+        });
+
+        document.getElementById('btn-engine').addEventListener('click', () => {
+            engineOn = !engineOn;
+            if (engineOn) {
+                leftHeadlight.intensity = 5;
+                rightHeadlight.intensity = 5;
+                document.getElementById('btn-engine').innerText = "Desligar Carro";
+                document.getElementById('btn-engine').style.background = "#2a9d8f";
+                // Aqui poderia adicionar um áudio do motor com HTML5 Audio API
+            } else {
+                leftHeadlight.intensity = 0;
+                rightHeadlight.intensity = 0;
+                document.getElementById('btn-engine').innerText = "Ligar Carro (Luzes)";
+                document.getElementById('btn-engine').style.background = "#e63946";
+            }
+        });
+
+        // 6. Ciclo de Animação
+        const clock = new THREE.Clock();
+        function animate() {
+            requestAnimationFrame(animate);
+            const delta = clock.getDelta();
+            
+            if (mixer) mixer.update(delta);
+            controls.update();
+            renderer.render(scene, camera);
+        }
+
+        animate();
+
+        // Ajustar redimensionamento da janela
+        window.addEventListener('resize', () => {
+            camera.aspect = window.innerWidth / window.innerHeight;
+            camera.updateProjectionMatrix();
+            renderer.setSize(window.innerWidth, window.innerHeight);
+        });
+    </script>
+</body>
+</html>
